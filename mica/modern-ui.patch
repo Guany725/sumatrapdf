@@ -1,0 +1,226 @@
+diff --git a/src/SumatraPDF.cpp b/src/SumatraPDF.cpp
+--- a/src/SumatraPDF.cpp
++++ b/src/SumatraPDF.cpp
+@@ -3306,6 +3306,18 @@
+     if (!win || !win->hwndFrame) {
+         return;
+     }
++    // Keep the native caption transparent to the system backdrop. Unsupported
++    // DWM attributes fail harmlessly on older versions of Windows.
++    HIGHCONTRASTW contrast{sizeof(contrast)};
++    SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(contrast), &contrast, 0);
++    bool mica =
++        gSettings->useMica && !(contrast.dwFlags & HCF_HIGHCONTRASTON) && !win->isFullScreen && !win->presentation;
++    auto backdrop = mica ? DWMSBT_MAINWINDOW : DWMSBT_NONE;
++    DwmSetWindowAttribute(win->hwndFrame, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
++    BOOL dark = GetLightness(ThemeWindowTextColor()) > GetLightness(ThemeControlBackgroundColor());
++    DwmSetWindowAttribute(win->hwndFrame, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
++    Color captionColor = DWMWA_COLOR_DEFAULT;
++    DwmSetWindowAttribute(win->hwndFrame, DWMWA_CAPTION_COLOR, &captionColor, sizeof(captionColor));
+     // Maximized / fullscreen can't edge-resize; hide the DWM border so it does
+     // not show as a bright 1px seam against the taskbar (issue #5851).
+     if (IsZoomed(win->hwndFrame) || win->isFullScreen || win->presentation) {
+@@ -3446,7 +3458,7 @@
+     // is deferred to ShowMainWindow so the shell sees a normal frame during
+     // the first ShowWindow and creates the taskbar button.
+     {
+-        bool inTitleBar = SettingsUseTabs();
++        bool inTitleBar = SettingsUseTabs() && !gSettings->useMica;
+         win->tabsInTitlebar = inTitleBar;
+         win->tabsCtrl->inTitleBar = inTitleBar;
+         if (inTitleBar) {
+@@ -3472,6 +3484,7 @@
+         HomePageRelayout(win);
+     }
+     DarkModeApplyToNewFrame(win);
++    UpdateWindowFrameBorderColor(win);
+ 
+     // show menu bar rebar now that layout is done
+     ShowMenuBarRebar(win);
+@@ -15325,6 +15338,7 @@
+             // high contrast can be toggled at any time (Alt+Shift+PrtScr);
+             // SPI_SETHIGHCONTRAST arrives here (no-op unless it changed)
+             UpdateThemeAfterHighContrastChange();
++            UpdateWindowFrameBorderColor(win);
+         InitMouseWheelInfo:
+             UpdateDeltaPerLine();
+ 
+diff --git a/src/Tabs.cpp b/src/Tabs.cpp
+--- a/src/Tabs.cpp
++++ b/src/Tabs.cpp
+@@ -925,6 +925,7 @@
+ }
+ 
+ void SetTabsInTitlebar(MainWindow* win, bool inTitleBar) {
++    inTitleBar = inTitleBar && !gSettings->useMica;
+     if (inTitleBar == win->tabsInTitlebar) {
+         return;
+     }
+diff --git a/src/shared/Theme.cpp b/src/shared/Theme.cpp
+--- a/src/shared/Theme.cpp
++++ b/src/shared/Theme.cpp
+@@ -37,16 +37,16 @@
+ static Str themesTxt = StrL(R"(Themes [
+     [
+         Name = Light
+-        TextColor = #000000
+-        BackgroundColor = #f2f2f2
+-        ControlBackgroundColor = #ffffff
++        TextColor = #1a1a1a
++        BackgroundColor = #f3f3f3
++        ControlBackgroundColor = #fafafa
+         ActiveTabBackgroundColor = #ffffff
+-        InactiveTabBackgroundColor = #e6e6e6
+-        LinkColor = #0020a0
++        InactiveTabBackgroundColor = #eeeeee
++        LinkColor = #005fb8
+         DisabledTextColor = #808080
+         DarkerTextColor = #404040
+         HotBackgroundColor = #e8e8e8
+-        EdgeColor = #c0c0c0
++        EdgeColor = #dedede
+         HotEdgeColor = #808080
+         DisabledEdgeColor = #d0d0d0
+         ErrorBackgroundColor = #ffe0e0
+@@ -57,16 +57,16 @@
+     ]
+     [
+         Name = Dark
+-        TextColor = #F9FAFB
+-        BackgroundColor = #000000
+-        ControlBackgroundColor = #000000
+-        ActiveTabBackgroundColor = #000000
+-        InactiveTabBackgroundColor = #191919
+-        LinkColor = #6B7280
++        TextColor = #f5f5f5
++        BackgroundColor = #202020
++        ControlBackgroundColor = #272727
++        ActiveTabBackgroundColor = #323232
++        InactiveTabBackgroundColor = #202020
++        LinkColor = #60cdff
+         DisabledTextColor = #6B7280
+         DarkerTextColor = #9CA3AF
+-        HotBackgroundColor = #1F2937
+-        EdgeColor = #374151
++        HotBackgroundColor = #383838
++        EdgeColor = #404040
+         HotEdgeColor = #6B7280
+         DisabledEdgeColor = #1F2937
+         ErrorBackgroundColor = #7F1D1D
+diff --git a/src/Settings.h b/src/Settings.h
+--- a/src/Settings.h
++++ b/src/Settings.h
+@@ -1248,6 +1248,9 @@
+     bool useSysColors;
+     // if true, documents are opened in tabs instead of new windows
+     bool useTabs;
++    // use a native Mica title bar on Windows 11; tabs appear below it.
++    // Restart after changing
++    bool useMica;
+     // if true, a small floating toolbar with selection actions (copy, read
+     // aloud, highlight etc.) pops up after selecting text. Set to false to
+     // disable it
+diff --git a/src/Settings.cpp b/src/Settings.cpp
+--- a/src/Settings.cpp
++++ b/src/Settings.cpp
+@@ -962,6 +962,7 @@
+     {offsetof(Settings, disableAutoLinks), SettingType::Bool, false},
+     {offsetof(Settings, useSysColors), SettingType::Bool, false},
+     {offsetof(Settings, useTabs), SettingType::Bool, true},
++    {offsetof(Settings, useMica), SettingType::Bool, true},
+     {offsetof(Settings, selectionToolbar), SettingType::Bool, true},
+     {offsetof(Settings, selectionToolbarLayout), SettingType::String, (intptr_t)""},
+     {offsetof(Settings, tabsMru), SettingType::Bool, false},
+@@ -1039,7 +1040,7 @@
+ };
+ const StructInfo gSettingsInfo = {
+     sizeof(Settings),
+-    163,
++    164,
+     gSettingsFields,
+     "\0\0DefaultDisplayMode\0DefaultZoom\0DisableJavaScript\0AllowExternalImages\0EnableTeXEnhancements\0EscToExit\0Ful"
+     "lPathInTitle\0InverseSearchCmdLine\0LazyLoading\0MainWindowBackground\0NoHomeTab\0HomePageSortByFrequentlyRead\0Ho"
+@@ -1054,13 +1055,13 @@
+     "inkDestination\0CitationHoverDelay\0ReadAloudVoiceId\0ReadAloudSpeed\0ReadingAutoScrollSpeed\0ReadingBar\0FastScro"
+     "llOverScrollbar\0PreventSleepInFullscreen\0TabWidth\0Theme\0HelpTheme\0LastLightTheme\0LastDarkTheme\0DocumentColo"
+     "rsFollowTheme\0TocDy\0ToolbarCustomLayout\0ToolbarShowReadAloud\0ToolbarSize\0TreeFontName\0TreeFontSize\0UIFontSi"
+-    "ze\0DisableAntiAlias\0EngineeringDrawingEnhance\0DisableAutoLinks\0UseSysColors\0UseTabs\0SelectionToolbar\0Select"
+-    "ionToolbarLayout\0TabsMru\0CtrlTabSimple\0ZoomLevels\0ZoomIncrement\0\0FixedPageUI\0\0EBookUI\0\0ComicBookUI\0\0Im"
+-    "ageUI\0\0ChmUI\0\0MarkdownUI\0\0HtmlUI\0\0ClaudeCode\0\0GrokBuild\0\0CodexBuild\0\0AntiGravity\0\0AIChatSidebarDx"
+-    "\0\0TranslateToLang\0TranslateFromLang\0TranslateEngine\0\0Annotations\0\0ExternalViewers\0\0ForwardSearch\0\0Prin"
+-    "terDefaults\0\0Fullscreen\0\0SelectionHandlers\0\0TextSnippets\0\0Shortcuts\0\0Themes\0\0TabGroups\0\0CustomScreen"
+-    "DPI\0\0\0DefaultPasswords\0UiLanguage\0VersionToSkip\0WindowState\0WindowPos\0SearchUIWindowPos\0HelpWindowPos\0Fi"
+-    "leStates\0SessionData\0ReopenOnce\0TimeOfLastUpdateCheck\0OpenCountWeek\0PropWinPos\0CheckForUpdates\0\0",
++    "ze\0DisableAntiAlias\0EngineeringDrawingEnhance\0DisableAutoLinks\0UseSysColors\0UseTabs\0UseMica\0SelectionToolba"
++    "r\0SelectionToolbarLayout\0TabsMru\0CtrlTabSimple\0ZoomLevels\0ZoomIncrement\0\0FixedPageUI\0\0EBookUI\0\0ComicBoo"
++    "kUI\0\0ImageUI\0\0ChmUI\0\0MarkdownUI\0\0HtmlUI\0\0ClaudeCode\0\0GrokBuild\0\0CodexBuild\0\0AntiGravity\0\0AIChatS"
++    "idebarDx\0\0TranslateToLang\0TranslateFromLang\0TranslateEngine\0\0Annotations\0\0ExternalViewers\0\0ForwardSearch"
++    "\0\0PrinterDefaults\0\0Fullscreen\0\0SelectionHandlers\0\0TextSnippets\0\0Shortcuts\0\0Themes\0\0TabGroups\0\0Cust"
++    "omScreenDPI\0\0\0DefaultPasswords\0UiLanguage\0VersionToSkip\0WindowState\0WindowPos\0SearchUIWindowPos\0HelpWindo"
++    "wPos\0FileStates\0SessionData\0ReopenOnce\0TimeOfLastUpdateCheck\0OpenCountWeek\0PropWinPos\0CheckForUpdates\0\0",
+     "\0\0default layout of pages. valid values: automatic, single page, facing, book view, continuous, continuous "
+     "facing, continuous book view, page aspect. page aspect (3.7+): first open of a PDF, XPS, DjVu or PostScript file "
+     "uses page 1 — taller than wide is continuous + fit width, wider than tall is single page + fit page; a remembered "
+@@ -1168,13 +1169,14 @@
+     "anti-aliasing, giving sharper but jagged edges\0CAD/engineering PDF line rendering: off, auto (enhance if a CAD "
+     "drawing is detected) or on\0if true, disables auto-linking of URLs and email addresses found in PDF text\0if "
+     "true, use the Windows system colors for the document background and text. Overrides other color settings\0if "
+-    "true, documents are opened in tabs instead of new windows\0if true, a small floating toolbar with selection "
+-    "actions (copy, read aloud, highlight etc.) pops up after selecting text. Set to false to disable it\0which "
+-    "built-in buttons the selection toolbar has and in what order, e.g. CmdCopySelection | CmdCreateAnnotHighlight. | "
+-    "or Separator inserts a separator. Leave a button out to hide it. Empty (the default) is the standard set. "
+-    "SelectionHandlers with SelectToolbarNameOrSvg still come last\0if true, Ctrl+Tab and Ctrl+Shift+Tab show the tab "
+-    "switcher in most recently used order instead of tab-strip order\0if true, Ctrl+Tab and Ctrl+Shift+Tab immediately "
+-    "switch to the next / previous tab in tab-strip order (the behavior before version 3.6) instead of showing the tab "
++    "true, documents are opened in tabs instead of new windows\0use a native Mica title bar on Windows 11; tabs appear "
++    "below it. Restart after changing\0if true, a small floating toolbar with selection actions (copy, read aloud, "
++    "highlight etc.) pops up after selecting text. Set to false to disable it\0which built-in buttons the selection "
++    "toolbar has and in what order, e.g. CmdCopySelection | CmdCreateAnnotHighlight. | or Separator inserts a "
++    "separator. Leave a button out to hide it. Empty (the default) is the standard set. SelectionHandlers with "
++    "SelectToolbarNameOrSvg still come last\0if true, Ctrl+Tab and Ctrl+Shift+Tab show the tab switcher in most "
++    "recently used order instead of tab-strip order\0if true, Ctrl+Tab and Ctrl+Shift+Tab immediately switch to the "
++    "next / previous tab in tab-strip order (the behavior before version 3.6) instead of showing the tab "
+     "switcher\0sequence of zoom levels when zooming in/out; values must lie between 8.33 and 1000000 (the largest one "
+     "becomes the maximum zoom, which is 6400 by default)\0how much a single zoom in / zoom out step changes the zoom, "
+     "as a percentage of the current zoom level. If 0 or negative, zooming steps through ZoomLevels "
+diff --git a/cmd/gen-settings.ts b/cmd/gen-settings.ts
+--- a/cmd/gen-settings.ts
++++ b/cmd/gen-settings.ts
+@@ -1804,6 +1804,12 @@
+     "if true, use the Windows system colors for the document background and text. Overrides other color settings",
+   ),
+   field("UseTabs", Bool, true, "if true, documents are opened in tabs instead of new windows").ver("3.0"),
++  field(
++    "UseMica",
++    Bool,
++    true,
++    "use a native Mica title bar on Windows 11; tabs appear below it. Restart after changing",
++  ),
+   field(
+     "SelectionToolbar",
+     Bool,
+@@ -2166,6 +2172,7 @@
+   "DisableAutoLinks",
+   "UseSysColors",
+   "UseTabs",
++  "UseMica",
+   "SelectionToolbar",
+   "TabsMru",
+   "CtrlTabSimple",
+diff --git a/tests/winapi.ts b/tests/winapi.ts
+--- a/tests/winapi.ts
++++ b/tests/winapi.ts
+@@ -1067,6 +1067,13 @@
+   return { left: buf[0]!, top: buf[1]!, right: buf[2]!, bottom: buf[3]! };
+ }
+ 
++export function getSystemBackdrop(hwnd: number): number | null {
++  const DWMWA_SYSTEMBACKDROP_TYPE = 38;
++  const buf = new Int32Array(1);
++  const hr = dwmapi.symbols.DwmGetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, ptr(buf), buf.byteLength);
++  return hr < 0 ? null : buf[0]!;
++}
++
+ // A hidden window keeps its last rect, so getWindowRect can't tell you whether a
+ // control is actually on screen (e.g. layout code that collapses a control hides
+ // it rather than resizing it to nothing). Ask the OS instead.

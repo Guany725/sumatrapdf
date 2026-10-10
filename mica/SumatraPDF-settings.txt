@@ -1,0 +1,6 @@
+UseMica = true
+Theme = System
+DocumentColorsFollowTheme = false
+CheckForUpdates = false
+RestoreSession = false
+UiLanguage = zh-CN

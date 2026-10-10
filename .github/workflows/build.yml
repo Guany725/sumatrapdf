@@ -1,42 +1,55 @@
-name: Build
+name: Mica portable build
 on:
   push:
-  pull_request:
-  repository_dispatch:
-    types: [build-pre-rel]
+    branches: [mica-modern-ui]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   build:
-    name: Build
-    #runs-on: SumatraBuilder
     runs-on: windows-2025-vs2026
+    timeout-minutes: 60
     steps:
-      - name: Check out source code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          # needed to calc build number via git log --oneline
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Install bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-
-      - name: Build
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+      - name: Apply reviewed UI patch
+        run: |
+          git apply --check mica/modern-ui.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git apply mica/modern-ui.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build portable release
+        run: bun cmd/build.ts -all
+      - name: Check document window, themes and fullscreen
         env:
-          R2_SECRET: ${{ secrets.R2_SECRET }}
-          R2_ACCESS: ${{ secrets.R2_ACCESS }}
-          BB_SECRET: ${{ secrets.BB_SECRET }}
-          BB_ACCESS: ${{ secrets.BB_ACCESS }}
-        run: bun .\cmd\build.ts -ci
-
-  ng:
-    name: Windows ng x64 release
-    runs-on: windows-2025-vs2026
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+          SUMATRA_TEST_EXE: ${{ github.workspace }}/out/rel64/SumatraPDF-static.exe
+        run: bun tests/ad-hoc-mica.ts --no-build
+      - name: Package portable application and matching source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out/package/SumatraPDF-Mica | Out-Null
+          Copy-Item out/rel64/SumatraPDF-static.exe out/package/SumatraPDF-Mica/SumatraPDF.exe
+          Copy-Item mica/SumatraPDF-settings.txt,mica/README-zh.md,COPYING,COPYING.BSD,AUTHORS out/package/SumatraPDF-Mica/
+          git rev-parse HEAD | Set-Content out/package/SumatraPDF-Mica/SOURCE-COMMIT.txt
+          git add -u
+          $sourceTree = git write-tree
+          git archive --format=zip --output=out/package/source.zip $sourceTree
+          Compress-Archive -Path out/package/SumatraPDF-Mica -DestinationPath out/package/SumatraPDF-Mica-x64.zip
+      - uses: actions/upload-artifact@v4
         with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-      - name: Build ng
-        run: bun cmd/ng-build.ts -rel SumatraPDF
+          name: SumatraPDF-Mica-x64
+          path: out/package/SumatraPDF-Mica-x64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SumatraPDF-Mica-source
+          path: out/package/source.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Mica-window-checks
+          path: tests/tmp/mica-*/preview.png
