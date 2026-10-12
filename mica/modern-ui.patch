@@ -542,3 +542,26 @@ diff --git a/src/PageThumbnails.cpp b/src/PageThumbnails.cpp
  
          Pixmap* thumbnail = ThumbnailToDraw(cache, pageNo - 1);
          if (thumbnail) {
+diff --git a/src/gui/win/WindowBase.cpp b/src/gui/win/WindowBase.cpp
+--- a/src/gui/win/WindowBase.cpp
++++ b/src/gui/win/WindowBase.cpp
+@@ -1230,6 +1230,19 @@
+ 
+         case WM_PAINT: {
+             if (subclassId) {
++                if (MicaIsEnabled(hwnd)) {
++                    PAINTSTRUCT ps;
++                    HDC hdc = BeginPaint(hwnd, &ps);
++                    Rect client = HwndClientRect(hwnd);
++                    DoubleBuffer buffer(hwnd, client);
++                    HBRUSH brush = BackgroundBrush();
++                    HdcFillRect(buffer.GetDC(), client, brush ? brush : GetSysColorBrush(COLOR_WINDOW));
++                    SendMessageW(hwnd, WM_PRINTCLIENT, (WPARAM)buffer.GetDC(), PRF_CLIENT | PRF_ERASEBKGND);
++                    // Native edit/control text uses GDI, so make its alpha opaque.
++                    buffer.Flush(hdc, &client, 1);
++                    EndPaint(hwnd, &ps);
++                    return 0;
++                }
+                 // Allow window controls to do their default drawing.
+                 return FinalWindowProc(msg, wparam, lparam);
+             }
