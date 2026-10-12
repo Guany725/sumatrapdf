@@ -52,4 +52,5 @@ jobs:
         if: always()
         with:
           name: Mica-window-checks
-          path: tests/tmp/mica-*/preview.png
+          path: .work/tests-tmp/tmp/mica-*/preview.png
+          include-hidden-files: true
